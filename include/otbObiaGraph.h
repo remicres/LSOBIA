@@ -137,14 +137,16 @@ struct Node
          m_HasToBeRemoved(other.m_HasToBeRemoved), m_Valid(other.m_Valid),
          m_Id(other.m_Id), m_BoundingBox(other.m_BoundingBox),
          m_Contour(other.m_Contour), m_Edges(other.m_Edges),
-         m_Attributes(other.m_Attributes)
+         m_Attributes(other.m_Attributes), m_ThreadSafe(other.m_ThreadSafe),
+         m_ThreadSafeForMerge(other.m_ThreadSafeForMerge)
+
     {}
 
     /**\brief Returns the vectorized coordinates (x,y) of the first pixel composing this node. */
-    inline uint64_t GetFirstPixelCoords() const { return m_Contour.GetStartingCoords(); }
+    inline CoordValueType GetFirstPixelCoords() const { return m_Contour.GetStartingCoords(); }
 
     /**\brief Change the vectorized coordinates (x,y) of the first pixel composing this node. */
-    inline void SetFirstPixelCoords(const uint64_t newCoords){ m_Contour.SetStartingCoords(newCoords); }
+    inline void SetFirstPixelCoords(const CoordValueType newCoords){ m_Contour.SetStartingCoords(newCoords); }
 
     /**\brief Given the position of the adjacent node, find the outgoing edge to it. */
     EdgeIteratorType FindEdge(const IdType targetId);
@@ -196,6 +198,10 @@ struct Node
 
     /**\brief Specific attributes related to the node*/
     NodeAttributeType m_Attributes;
+
+    /**\brief Thread safe properties of the node*/
+    bool m_ThreadSafe:1;
+    bool m_ThreadSafeForMerge:1;
 
     /**\brief Debug */
     EdgeIteratorType Begin(){return m_Edges.begin();}
@@ -279,6 +285,10 @@ public:
     /**\brief This method applies a lambda function on each node of the graph. */
     template< typename LambdaFunctionType >
     void ApplyForEachNode(LambdaFunctionType f);
+    template< typename LambdaFunctionType >
+    void ApplyForEachNode(const uint64_t rangeStart, const uint64_t rangeEnd, LambdaFunctionType f);
+
+    void MergePairOfNodes(NodeType* nodeIn, NodeType* nodeOut);
 
     /**\brief This method merges two adjacent nodes: nodeOut merges into nodeIn
      * @param: Node in (node which will be updated after merge)
@@ -287,8 +297,9 @@ public:
 
     /** \brief This methods removes the expired nodes from the graph, i.e
         those whose m_HasToBeRemoved is true.
+        @param: a boolean telling if nodes/edges IDs have to be updated
     */
-    void RemoveNodes();
+    std::vector<uint32_t> RemoveNodes(bool update = true);
 
     /** \brief This methods returns the quantity of memory in bytes to store this graph */
     uint64_t GetMemorySize() const;
@@ -325,9 +336,13 @@ public:
     /**\brief Removes all nodes*/
     void Reset()
     {
-        m_Nodes.clear();
-        m_Nodes.shrink_to_fit();
+      NodeListType().swap(m_Nodes);
     }
+
+    /**\brief Merge edge between 2 nodes by updating contour, boundary, edges, etc ...
+     * \param: Node in
+     * \param: Node Out*/
+    void MergeEdge(NodeType* nodeIn, NodeType* nodeOut);
 
 protected:
 
@@ -357,13 +372,6 @@ protected:
     double m_OriginY;
     std::string m_ProjectionRef;
 
-
-private:
-
-    /**\brief Merge edge between 2 nodes by updating contour, boundary, edges, etc ...
-     * \param: Node in
-     * \param: Node Out*/
-    void MergeEdge(NodeType* nodeIn, NodeType* nodeOut);
 };
 
 } // end of namespace obia

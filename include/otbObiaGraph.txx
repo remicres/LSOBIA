@@ -37,14 +37,11 @@ template< typename TNodeAttribute, typename TEdgeAttribute >
 uint64_t 
 Node<TNodeAttribute, TEdgeAttribute>::GetMemorySize() const
 {
-    uint64_t nodeMemory = 2*BoolSize + // valid and remove flags
-                          IdSize + // the id
-                          sizeof(m_BoundingBox) + // bbox
-                          m_Contour.GetMemorySize() + // contour
-                          m_Attributes.GetMemorySize() + // attributs
-                          sizeof(EdgeListType); // the edge container
+  uint64_t nodeMemory = sizeof(Self);
 
-    for(auto edgeIt = m_Edges.begin(); edgeIt != m_Edges.end(); edgeIt++)
+  nodeMemory+=m_Contour.GetMemorySize()+m_Attributes.GetMemorySize();
+
+  for(auto edgeIt = m_Edges.begin(); edgeIt != m_Edges.end(); edgeIt++)
     {
         nodeMemory += edgeIt->GetMemorySize();
     }
@@ -135,27 +132,30 @@ Graph<TNode>::InitStartingNode(NodeType* node, const IdType id)
     node->m_Contour.SetStartingCoords(id);
     node->m_Contour.FirstInit();
 
-    // Initialisation of the edges
-    auto neighbors = otb::obia::SpatialTools::FourConnectivity(id, m_ImageWidth, m_ImageHeight);
-
-    uint32_t numEdges = 0;
-    for(unsigned short n = 0; n < 4; n++){ if(neighbors[n] > -1){ numEdges++; } }
-    node->m_Edges.reserve(numEdges);
-
-    for(unsigned short n = 0; n < 4; n++)
-    {
-        if(neighbors[n] > -1)
-        {
-            // Add an edge to the current node targeting the adjacent node
-            auto newEdge = node->AddEdge();
-
-            // Add the target
-            newEdge->m_TargetId = neighbors[n];
-
-            // Initialisation of the boundary
-            newEdge->m_Boundary = 1;
-        }
-    }
+    // We don't fo this here anymore.
+    // Now we use nodata to init properly the edges in the imageToGraph
+    
+//    // Initialisation of the edges
+//    auto neighbors = otb::obia::SpatialTools::FourConnectivity(id, m_ImageWidth, m_ImageHeight);
+//
+//    uint32_t numEdges = 0;
+//    for(unsigned short n = 0; n < 4; n++){ if(neighbors[n] > -1){ numEdges++; } }
+//    node->m_Edges.reserve(numEdges);
+//
+//    for(unsigned short n = 0; n < 4; n++)
+//    {
+//        if(neighbors[n] > -1)
+//        {
+//            // Add an edge to the current node targeting the adjacent node
+//            auto newEdge = node->AddEdge();
+//
+//            // Add the target
+//            newEdge->m_TargetId = neighbors[n];
+//
+//            // Initialisation of the boundary
+//            newEdge->m_Boundary = 1;
+//        }
+//    }
 }
 
 template< typename TNode >
@@ -209,154 +209,168 @@ void Graph<TNode>::ApplyForEachNode(LambdaFunctionType f)
 }
 
 template< typename TNode >
+template< typename LambdaFunctionType >
+void Graph<TNode>::ApplyForEachNode(const uint64_t rangeStart, const uint64_t rangeEnd, LambdaFunctionType f)
+{
+    std::for_each(m_Nodes.begin()+rangeStart, m_Nodes.begin()+rangeEnd, f);
+}
+
+template< typename TNode >
 void
 Graph<TNode>::MergeEdge(NodeType* nodeIn, NodeType* nodeOut)
 {
-	double startCoords = nodeIn->GetFirstPixelCoords();
-	double startCoords2 = nodeOut->GetFirstPixelCoords();
 
-	// Explore the edges of nodeOut
-    for(auto edgeIt = nodeOut->m_Edges.begin(); edgeIt != nodeOut->m_Edges.end(); edgeIt++)
+  // Explore the edges of nodeOut
+  for(auto& edgeIt : nodeOut->m_Edges)
     {
-        // Local variable to record the boundary length of nodeOut with its
-        // adjacent node.
-        uint32_t boundary;
-        
-        // Retrieve the adjacent node of nodeOut -> adjNodeOut
-        auto adjNodeOut = GetNodeAt(edgeIt->m_TargetId);
+    // Local variable to record the boundary length of nodeOut with its
+    // adjacent node.
+    uint32_t boundary;
 
-        // Find the edge from adjNodeOut to nodeOut
-        auto edgAdjToOut = adjNodeOut->FindEdge(nodeOut->m_Id);
+    // Retrieve the adjacent node of nodeOut -> adjNodeOut
+    auto adjNodeOut = GetNodeAt(edgeIt.m_TargetId);
 
-        // If this edge is the first edge of adjNodeOut then adjNodeOut is not valid
-        // anymore for merging with one of its adjacent node during a segmentation process.
-        // This is not so generic since some obia processes won't need that but it is a price
-        // to pay to factorize and shorten a bit the code.
-        if(edgAdjToOut == adjNodeOut->m_Edges.begin())
+    // Find the edge from adjNodeOut to nodeOut
+    auto edgAdjToOut = adjNodeOut->FindEdge(nodeOut->m_Id);
+
+    // If this edge is the first edge of adjNodeOut then adjNodeOut is not valid
+    // anymore for merging with one of its adjacent node during a segmentation process.
+    // This is not so generic since some obia processes won't need that but it is a price
+    // to pay to factorize and shorten a bit the code.
+    if(edgAdjToOut == adjNodeOut->m_Edges.begin())
+      {
+      adjNodeOut->m_Valid = false;
+      }
+
+    // Record the boundary length between adjNodeOut and nodeOut
+    boundary = edgAdjToOut->m_Boundary;
+
+    // The edge adjNodeOut -> nodeOut can be safely removed
+    adjNodeOut->m_Edges.erase(edgAdjToOut);
+
+    // Edges have to be added or updated if adjNodeOut is not nodeIn
+    if(adjNodeOut != nodeIn)
+      {
+      // Try to find if there is an edge between adjNodeOut and nodeIn
+      auto edgAdjToIn = adjNodeOut->FindEdge(nodeIn->m_Id);
+
+      if(edgAdjToIn == adjNodeOut->m_Edges.end())
         {
-            adjNodeOut->m_Valid = false;
+        // If the edge does not exist, it has to be created
+
+        // AdjNodeOut -> nodeIn
+        auto adjOutToIn = adjNodeOut->AddEdge();
+        adjOutToIn->m_TargetId = nodeIn->m_Id;
+        adjOutToIn->m_Boundary = boundary;
+
+        // nodeIn -> AdjNodeOut
+        auto inToAdjOut = nodeIn->AddEdge();
+        inToAdjOut->m_TargetId = adjNodeOut->m_Id;
+        inToAdjOut->m_Boundary = boundary;
+
+        } // end if(edgAdjToIn == adjNodeOut->m_Edges.end())
+      else
+        {
+        // the edges exist, the boundary attribute has to be updated
+
+        // Increment AdjNodeOut -> nodeIn
+        edgAdjToIn->m_Boundary += boundary;
+
+        // Increment nodeIn -> AdjNodeOut
+        auto edgInToAdj = nodeIn->FindEdge(adjNodeOut->m_Id);
+        edgInToAdj->m_Boundary += boundary;
         }
 
-        // Record the boundary length between adjNodeOut and nodeOut
-        boundary = edgAdjToOut->m_Boundary;
-
-        // The edge adjNodeOut -> nodeOut can be safely removed
-        adjNodeOut->m_Edges.erase(edgAdjToOut);
-
-        // Edges have to be added or updated if adjNodeOut is not nodeIn
-        if(adjNodeOut != nodeIn)
-        {
-            // Try to find if there is an edge between adjNodeOut and nodeIn
-            auto edgAdjToIn = adjNodeOut->FindEdge(nodeIn->m_Id);
-
-            if(edgAdjToIn == adjNodeOut->m_Edges.end())
-            {
-                // If the edge does not exist, it has to be created
-
-                // AdjNodeOut -> nodeIn
-                auto adjOutToIn = adjNodeOut->AddEdge();
-                adjOutToIn->m_TargetId = nodeIn->m_Id;
-                adjOutToIn->m_Boundary = boundary;
-
-                // nodeIn -> AdjNodeOut
-                auto inToAdjOut = nodeIn->AddEdge();
-                inToAdjOut->m_TargetId = adjNodeOut->m_Id;
-                inToAdjOut->m_Boundary = boundary;
-
-            } // end if(edgAdjToIn == adjNodeOut->m_Edges.end())
-            else
-            {
-                // the edges exist, the boundary attribute has to be updated
-
-                // Increment AdjNodeOut -> nodeIn
-                edgAdjToIn->m_Boundary += boundary;
-
-                // Increment nodeIn -> AdjNodeOut
-                auto edgInToAdj = nodeIn->FindEdge(adjNodeOut->m_Id);
-                edgInToAdj->m_Boundary += boundary;
-            }
-
-        } // end if(adjNodeOut != nodeIn)
+      } // end if(adjNodeOut != nodeIn)
 
     } // end for(auto edgeIt = nodeOut->m_Edges.begin(); edgeIt != nodeOut->m_Edges.end(); edgeIt++)
 
-    // All the edges of nodeOut can be safely removes
-    nodeOut->m_Edges.clear();
-    nodeOut->m_Edges.shrink_to_fit();
+  // All the edges of nodeOut can be safely removes
+  typename NodeType::EdgeListType().swap(nodeOut->m_Edges);
+}
 
+template< typename TNode >
+void
+Graph<TNode>::MergePairOfNodes(NodeType* nodeIn, NodeType* nodeOut)
+{
+  // Fusion of the bounding box
+  SpatialTools::MergeBoundingBox(nodeIn->m_BoundingBox, nodeOut->m_BoundingBox);
+
+  // Fusion of the contour
+  nodeIn->m_Contour.MergeWith(nodeOut->m_Contour, m_ImageWidth, m_ImageHeight);
+
+  // Fusion of the edges
+  MergeEdge(nodeIn, nodeOut);
+
+  // nodeOut has to be removed, so we mark it as it
+  nodeOut->m_HasToBeRemoved = true;
 }
 
 template< typename TNode >
 void 
 Graph<TNode>::Merge(NodeType* nodeIn, NodeType* nodeOut)
 {
-    // Fusion of the bounding box
-    SpatialTools::MergeBoundingBox(nodeIn->m_BoundingBox, nodeOut->m_BoundingBox);
+  // Merge the pair of nodes
+  MergePairOfNodes(nodeIn, nodeOut);
 
-    // Fusion of the contour
-    nodeIn->m_Contour.MergeWith(nodeOut->m_Contour, m_ImageWidth, m_ImageHeight);
-
-    // Fusion of the edges
-    MergeEdge(nodeIn, nodeOut);
-
-    // nodeOut has to be removed, so we mark it as it
-    nodeOut->m_HasToBeRemoved = true;
-
-    // Both nodes must not have to be considered
-    nodeIn->m_Valid = false;
-    nodeOut->m_Valid = false;
+  // Both nodes must not have to be considered
+  nodeIn->m_Valid = false;
+  nodeOut->m_Valid = false;
 }
 
 template< typename TNode >
-void 
-Graph<TNode>::RemoveNodes()
+std::vector<uint32_t> 
+Graph<TNode>::RemoveNodes(bool update)
 {
-    // To keep nodes aligned in memory, we avoid using vector of pointers
-    // but directly vector of nodes. However this complicates the removal
-    // operation since the ids of the nodes has to be updated.
-    // Space complexity: O(Nt + Et) where Nt is the total number of nodes and Et the total number of edges
-    // Time complexity: O(Nt * E) where Nt is the total number of nodes and E the average number of edges per node.
+  // To keep nodes aligned in memory, we avoid using vector of pointers
+  // but directly vector of nodes. However this complicates the removal
+  // operation since the ids of the nodes has to be updated.
+  // Space complexity: O(Nt + Et) where Nt is the total number of nodes and Et the total number of edges
+  // Time complexity: O(Nt * E) where Nt is the total number of nodes and E the average number of edges per node.
 
-    // Count the number of merged nodes at each position
-    // Linear in time wrt to the number of nodes
-    std::vector<uint32_t> numMergedNodes(m_Nodes.size(), 0);
-    uint64_t idx = 0;
-    uint32_t numMerged = 0;
+  // Count the number of merged nodes at each position
+  // Linear in time wrt to the number of nodes
+  std::vector<uint32_t> numMergedNodes(m_Nodes.size(), 0);
+  uint64_t idx = 0;
+  uint32_t numMerged = 0;
 
-    auto lambdaNumMerges = [&numMergedNodes, &idx, &numMerged](const NodeType& node){
-        
-        if(node.m_HasToBeRemoved)
-        {
-            numMerged++;
-        }
+  auto lambdaNumMerges = [&numMergedNodes, &idx, &numMerged](const NodeType& node){
 
-        numMergedNodes[idx] = numMerged;
-        idx++;
-    };
+    if(node.m_HasToBeRemoved)
+      {
+      numMerged++;
+      }
 
-    ApplyForEachNode(lambdaNumMerges);
+    numMergedNodes[idx] = numMerged;
+    idx++;
+  };
 
-    // Remove the nodes: Linear in time wrt to the number of nodes
-    auto eraseIt = std::remove_if(m_Nodes.begin(), m_Nodes.end(), [](NodeType& node){
-        return node.m_HasToBeRemoved == true;
-    });
+  ApplyForEachNode(lambdaNumMerges);
 
-    m_Nodes.erase(eraseIt, m_Nodes.end());
-    
-    // Need to call this method to reduce the memory usage.
-    m_Nodes.shrink_to_fit();
+  // Remove the nodes: Linear in time wrt to the number of nodes
+  auto eraseIt = std::remove_if(m_Nodes.begin(), m_Nodes.end(), [](NodeType& node){
+    return node.m_HasToBeRemoved == true;
+  });
 
+  m_Nodes.erase(eraseIt, m_Nodes.end());
+
+  // We might want do this in parallel instead
+  if (update)
+    {
     auto lambdaDecrementIdEdge = [&numMergedNodes](EdgeType& edge){
-        edge.m_TargetId = edge.m_TargetId - numMergedNodes[edge.m_TargetId];
+      edge.m_TargetId = edge.m_TargetId - numMergedNodes[edge.m_TargetId];
     };
 
     auto lambdaDecrementIdNode = [&numMergedNodes, &lambdaDecrementIdEdge]( NodeType& node ){
-        // Update the node's id
-        node.m_Id = node.m_Id - numMergedNodes[node.m_Id];
-        node.ApplyForEachEdge(lambdaDecrementIdEdge);
+      // Update the node's id
+      node.m_Id = node.m_Id - numMergedNodes[node.m_Id];
+      node.ApplyForEachEdge(lambdaDecrementIdEdge);
     };
 
     ApplyForEachNode(lambdaDecrementIdNode);
+    }   
+  return numMergedNodes;
+
 }
 
 template< typename TNode >
